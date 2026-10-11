@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0d0b1e">
+<title>Tomo · ricevi</title>
+<style>
+  :root { --notte: #0d0b1e; --ciano: #00f0ff; --magenta: #ff2bd6; --lavanda: #8c86b8; --testo: #e6f7ff; }
+  * { box-sizing: border-box; }
+  body { background: var(--notte); color: var(--testo); font-family: ui-monospace, monospace; margin: 0; padding: 16px; }
+  h1 { color: var(--ciano); letter-spacing: 3px; margin: 4px 0 2px; font-size: 22px; }
+  #sotto { color: var(--lavanda); font-size: 13px; margin-bottom: 12px; }
+  #schermo { position: relative; width: 100%; aspect-ratio: 1; background: #000; border: 2px solid var(--ciano); border-radius: 14px; overflow: hidden; }
+  video { width: 100%; height: 100%; object-fit: cover; }
+  #mirino { position: absolute; inset: 14%; border: 2px dashed rgba(255, 43, 214, .8); border-radius: 10px; pointer-events: none; }
+  #barra { height: 14px; background: #1f1a44; border-radius: 7px; overflow: hidden; margin: 14px 0 8px; }
+  #riempi { height: 100%; width: 0; background: linear-gradient(90deg, var(--ciano), var(--magenta)); transition: width .15s; }
+  #stato { min-height: 3.2em; white-space: pre-line; font-size: 15px; }
+  button, a.bottone { display: block; width: 100%; text-align: center; padding: 18px; margin: 12px 0; border: 0; border-radius: 14px;
+    font: bold 18px ui-monospace, monospace; color: var(--notte); background: linear-gradient(135deg, var(--ciano), var(--magenta)); text-decoration: none; }
+  .nascosto { display: none !important; }
+  canvas { display: none; }
+</style>
+</head>
+<body>
+<h1>TOMO//</h1>
+<div id="sotto">ricevi un file guardando lo schermo dell'altro telefono · niente rete</div>
+<button id="inizia">▶ INIZIA</button>
+<div id="schermo" class="nascosto"><video id="v" muted playsinline autoplay></video><div id="mirino"></div></div>
+<div id="barra"><div id="riempi"></div></div>
+<div id="stato">Tocca ▶ INIZIA e inquadra il QR che si muove sull'altro telefono, da vicino.</div>
+<a id="scarica" class="bottone nascosto">⬇ SALVA</a>
+<canvas id="c"></canvas>
+<script src="jsQR.js"></script>
+<script src="ricevitore.js"></script>
+<script>
+(function () {
+  // Dalla seconda volta la pagina funziona anche senza internet
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(function () {});
+
+  var ass = new TomoQr.Assemblatore();
+  var stato = document.getElementById("stato");
+  var riempi = document.getElementById("riempi");
+  var v = document.getElementById("v");
+  var c = document.getElementById("c");
+  var ctx = c.getContext("2d", { willReadFrequently: true });
+  var rivelatore = ("BarcodeDetector" in window) ? new BarcodeDetector({ formats: ["qr_code"] }) : null;
+  var attivo = false;
+  var flusso = null;
+
+  function misura(b) {
+    if (b >= 1e6) return (b / 1e6).toFixed(1) + " MB";
+    if (b >= 1e3) return Math.round(b / 1e3) + " KB";
+    return b + " B";
+  }
+
+  function nuovo(testo) {
+    if (!ass.aggiungi(testo)) return;
+    riempi.style.width = Math.round(ass.ricevuti * 100 / ass.n) + "%";
+    stato.textContent = "📥 " + ass.nome + "\n" + ass.ricevuti + " / " + ass.n + " pezzi";
+    if (navigator.vibrate && ass.ricevuti === 1) navigator.vibrate(60);
+    if (ass.completo()) finito();
+  }
+
+  function finito() {
+    attivo = false;
+    if (flusso) flusso.getTracks().forEach(function (t) { t.stop(); });
+    var file = ass.file();
+    if (!file) {
+      stato.textContent = "❌ Il file è arrivato rovinato. Tocca ▶ INIZIA e riprova.";
+      ass = new TomoQr.Assemblatore();
+      document.getElementById("inizia").classList.remove("nascosto");
+      return;
+    }
+    var a = document.getElementById("scarica");
+    a.href = URL.createObjectURL(new Blob([file]));
+    a.download = ass.nome;
+    a.textContent = "⬇ SALVA " + ass.nome + " (" + misura(file.length) + ")";
+    a.classList.remove("nascosto");
+    document.getElementById("schermo").classList.add("nascosto");
+    stato.textContent = "✓ Ricevuto tutto, il controllo torna.";
+    if (navigator.vibrate) navigator.vibrate([80, 60, 80]);
+    a.click();
+  }
+
+  /** Un fotogramma della fotocamera: col lettore del telefono se c'è (veloce), se no con jsQR. */
+  function guarda() {
+    if (!attivo) return;
+    if (v.readyState < 2) { requestAnimationFrame(guarda); return; }
+    if (rivelatore) {
+      rivelatore.detect(v).then(function (codici) {
+        codici.forEach(function (k) { nuovo(k.rawValue); });
+        requestAnimationFrame(guarda);
+      }).catch(function () { rivelatore = null; requestAnimationFrame(guarda); });
+      return;
+    }
+    var lato = Math.min(v.videoWidth, v.videoHeight);
+    var scala = Math.min(1, 720 / lato);
+    c.width = Math.round(lato * scala);
+    c.height = c.width;
+    ctx.drawImage(v, (v.videoWidth - lato) / 2, (v.videoHeight - lato) / 2, lato, lato, 0, 0, c.width, c.height);
+    var qr = jsQR(ctx.getImageData(0, 0, c.width, c.height).data, c.width, c.height, { inversionAttempts: "dontInvert" });
+    if (qr) nuovo(qr.data);
+    requestAnimationFrame(guarda);
+  }
+
+  document.getElementById("inizia").onclick = function () {
+    var b = this;
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 1280 } }, audio: false })
+      .then(function (s) {
+        flusso = s;
+        v.srcObject = s;
+        b.classList.add("nascosto");
+        document.getElementById("schermo").classList.remove("nascosto");
+        stato.textContent = "Inquadra il QR che si muove, da vicino e fermo.";
+        attivo = true;
+        requestAnimationFrame(guarda);
+      })
+      .catch(function (e) { stato.textContent = "❌ Senza la fotocamera non posso leggere (" + e.name + "). Consentila e riprova."; });
+  };
+})();
+</script>
+</body>
+</html>
